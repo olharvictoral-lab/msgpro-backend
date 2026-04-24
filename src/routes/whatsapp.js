@@ -17,10 +17,12 @@ router.post('/connect', async (req, res) => {
   }
 });
 
-// Obter QR Code atual
+// Obter QR Code atual (retorna imagem base64)
 router.get('/qr', (req, res) => {
   const qr = wpMgr.getQR();
-  if (!qr) return res.json({ ok: false, error: 'QR não disponível. Chame /connect primeiro.' });
+  if (!qr) {
+    return res.status(404).json({ ok: false, error: 'QR não disponível. Chame /connect primeiro.' });
+  }
   res.json({ ok: true, qr });
 });
 
