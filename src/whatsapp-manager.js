@@ -1,16 +1,7 @@
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeInMemoryStore,
-} = require('@whiskeysockets/baileys');
-const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 
 const AUTH_FOLDER = path.join(__dirname, '../auth_info');
-const logger = pino({ level: 'silent' });
 
 class WhatsAppManager {
   constructor() {
@@ -18,7 +9,14 @@ class WhatsAppManager {
     this.qr = null;
     this.status = 'disconnected';
     this.groups = [];
-    this.store = makeInMemoryStore({ logger });
+    this._baileys = null;
+  }
+
+  async _getBaileys() {
+    if (!this._baileys) {
+      this._baileys = await import('@whiskeysockets/baileys');
+    }
+    return this._baileys;
   }
 
   getStatus() {
@@ -49,18 +47,24 @@ class WhatsAppManager {
       fs.mkdirSync(AUTH_FOLDER, { recursive: true });
     }
 
+    const baileys = await this._getBaileys();
+    const {
+      default: makeWASocket,
+      useMultiFileAuthState,
+      DisconnectReason,
+      fetchLatestBaileysVersion,
+    } = baileys;
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
     const { version } = await fetchLatestBaileysVersion();
 
     this.sock = makeWASocket({
       version,
-      logger,
       auth: state,
-      printQRInTerminal: false,
+      printQRInTerminal: true,
       browser: ['MsgPro', 'Chrome', '1.0.0'],
+      logger: (await import('pino')).default({ level: 'silent' }),
     });
-
-    this.store.bind(this.sock.ev);
 
     this.sock.ev.on('creds.update', saveCreds);
 
@@ -68,37 +72,38 @@ class WhatsAppManager {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        const QRCode = require('qrcode');
-        this.qr = await QRCode.toDataURL(qr);
-        this.status = 'qr_ready';
-        console.log('[WhatsApp] QR Code gerado');
+        try {
+          const QRCode = require('qrcode');
+          this.qr = await QRCode.toDataURL(qr);
+          this.status = 'qr_ready';
+          console.log('[WhatsApp] QR Code gerado com sucesso');
+        } catch (err) {
+          console.error('[WhatsApp] Erro ao gerar QR:', err.message);
+        }
       }
 
       if (connection === 'open') {
         this.status = 'connected';
         this.qr = null;
-        console.log('[WhatsApp] Conectado com sucesso!');
+        console.log('[WhatsApp] Conectado!');
         await this._loadGroups();
       }
 
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = code !== DisconnectReason.loggedOut;
-        this.status = shouldReconnect ? 'reconnecting' : 'disconnected';
         console.log('[WhatsApp] Desconectado. Código:', code);
 
-        if (shouldReconnect) {
-          console.log('[WhatsApp] Reconectando...');
-          setTimeout(() => this.connect(), 5000);
-        } else {
-          // Limpa auth se fez logout
+        // 401 = logout, não reconecta
+        if (code === 401 || code === 440) {
+          this.status = 'disconnected';
           fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+          console.log('[WhatsApp] Sessão encerrada. Reconecte manualmente.');
+        } else {
+          this.status = 'reconnecting';
+          console.log('[WhatsApp] Reconectando em 5s...');
+          setTimeout(() => this.connect(), 5000);
         }
       }
-    });
-
-    this.sock.ev.on('groups.update', async () => {
-      await this._loadGroups();
     });
 
     return { ok: true, message: 'Conectando... Aguarde o QR Code em /api/whatsapp/qr' };
@@ -120,22 +125,13 @@ class WhatsAppManager {
 
   async sendText(jid, message, delay = 1) {
     if (this.status !== 'connected') {
-      throw new Error('WhatsApp não conectado. Conecte primeiro via /api/whatsapp/connect');
+      throw new Error('WhatsApp não conectado.');
     }
-    if (!jid || !message) {
-      throw new Error('jid e message são obrigatórios');
-    }
-
-    // Garante formato correto do JID
     const formattedJid = jid.includes('@') ? jid : `${jid}@g.us`;
-
-    // Delay para evitar ban
     if (delay > 0) {
       await new Promise((r) => setTimeout(r, delay * 1000));
     }
-
-    const result = await this.sock.sendMessage(formattedJid, { text: message });
-    return result;
+    return await this.sock.sendMessage(formattedJid, { text: message });
   }
 
   async disconnect() {
