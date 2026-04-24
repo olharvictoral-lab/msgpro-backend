@@ -28,9 +28,13 @@ app.use('/api/contacts',  require('./routes/contacts'));
 
 // ─── Health check ───
 app.get('/api/status', (req, res) => {
+  const wpMgr = require('./whatsapp-manager');
+  const tgMgr = require('./telegram-manager');
   res.json({
     status:    'online',
     version:   '2.0.0',
+    whatsapp:  wpMgr.getStatus(),
+    telegram:  tgMgr.getStatus(),
     uptime:    Math.floor(process.uptime()) + 's',
     timestamp: new Date().toISOString()
   });
